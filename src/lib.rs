@@ -25,18 +25,19 @@ use parking_lot::Mutex;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use wgc::instance::{AdapterInfo, DeviceType};
+pub use wgc::PipelineStage;
 pub use wgt::{
     AddressMode, Backend, BackendBit, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType,
     BlendDescriptor, BlendFactor, BlendOperation, BufferAddress, BufferSize, BufferUsage, Color,
     ColorStateDescriptor, ColorWrite, CommandBufferDescriptor, CompareFunction, CullMode,
     DepthStencilStateDescriptor, DeviceDescriptor, DynamicOffset, Extent3d, Features, FilterMode,
     FrontFace, IndexFormat, InputStepMode, Limits, Origin3d, PowerPreference, PresentMode,
-    PrimitiveTopology, PushConstantRange, RasterizationStateDescriptor,
-    RenderBundleEncoderDescriptor, ShaderLocation, ShaderStage, StencilOperation,
-    StencilStateFaceDescriptor, SwapChainDescriptor, SwapChainStatus, TextureAspect,
-    TextureComponentType, TextureDataLayout, TextureDimension, TextureFormat, TextureUsage,
-    TextureViewDimension, VertexAttributeDescriptor, VertexBufferDescriptor, VertexFormat,
-    VertexStateDescriptor, BIND_BUFFER_ALIGNMENT, COPY_BUFFER_ALIGNMENT,
+    PrimitiveTopology, QuerySetDescriptor, QueryType, PushConstantRange,
+    RasterizationStateDescriptor, RenderBundleEncoderDescriptor, ShaderLocation, ShaderStage,
+    StencilOperation, StencilStateFaceDescriptor, SwapChainDescriptor, SwapChainStatus,
+    TextureAspect, TextureComponentType, TextureDataLayout, TextureDimension, TextureFormat,
+    TextureUsage, TextureViewDimension, VertexAttributeDescriptor, VertexBufferDescriptor,
+    VertexFormat, VertexStateDescriptor, BIND_BUFFER_ALIGNMENT, COPY_BUFFER_ALIGNMENT,
     COPY_BYTES_PER_ROW_ALIGNMENT, PUSH_CONSTANT_ALIGNMENT,
 };
 
@@ -161,6 +162,7 @@ trait Context: Sized {
     type CommandBufferId: Send + Sync;
     type RenderBundleEncoderId: RenderInner<Self>;
     type RenderBundleId: Send + Sync + 'static;
+    type QuerySetId: Send + Sync + 'static;
     type SurfaceId: Send + Sync + 'static;
     type SwapChainId: Send + Sync + 'static;
 
@@ -252,6 +254,11 @@ trait Context: Sized {
         device: &Self::DeviceId,
         desc: &RenderBundleEncoderDescriptor,
     ) -> Self::RenderBundleEncoderId;
+    fn device_create_query_set(
+        &self,
+        device: &Self::DeviceId,
+        desc: &QuerySetDescriptor,
+    ) -> Self::QuerySetId;
     fn device_drop(&self, device: &Self::DeviceId);
     fn device_poll(&self, device: &Self::DeviceId, maintain: Maintain);
 
@@ -298,6 +305,7 @@ trait Context: Sized {
     fn shader_module_drop(&self, shader_module: &Self::ShaderModuleId);
     fn command_buffer_drop(&self, command_buffer: &Self::CommandBufferId);
     fn render_bundle_drop(&self, render_bundle: &Self::RenderBundleId);
+    fn query_set_drop(&self, query_set: &Self::QuerySetId);
     fn compute_pipeline_drop(&self, pipeline: &Self::ComputePipelineId);
     fn render_pipeline_drop(&self, pipeline: &Self::RenderPipelineId);
 
@@ -330,6 +338,34 @@ trait Context: Sized {
         source: TextureCopyView,
         destination: TextureCopyView,
         copy_size: Extent3d,
+    );
+    fn command_encoder_write_timestamp(
+        &self,
+        encoder: &Self::CommandEncoderId,
+        query_set: &Self::QuerySetId,
+        query_index: u32,
+        pipeline_stage: PipelineStage,
+    );
+    fn command_encoder_begin_pipeline_statistics_query(
+        &self,
+        encoder: &Self::CommandEncoderId,
+        query_set: &Self::QuerySetId,
+        query_index: u32,
+    );
+    fn command_encoder_end_pipeline_statistics_query(
+        &self,
+        encoder: &Self::CommandEncoderId,
+        query_set: &Self::QuerySetId,
+        query_index: u32,
+    );
+    fn command_encoder_resolve_query_set(
+        &self,
+        encoder: &Self::CommandEncoderId,
+        query_set: &Self::QuerySetId,
+        first_query: u32,
+        query_count: u32,
+        destination: &Self::BufferId,
+        destination_offset: BufferAddress,
     );
 
     fn command_encoder_begin_compute_pass(
@@ -710,6 +746,7 @@ impl Drop for CommandBuffer {
 pub struct CommandEncoder {
     context: Arc<C>,
     id: <C as Context>::CommandEncoderId,
+    current_pipeline_statistics_query: Option<(<C as Context>::QuerySetId, u32)>,
     /// This type should be !Send !Sync, because it represents an allocation on this thread's
     /// command buffer.
     _p: PhantomData<*const u8>,
@@ -761,7 +798,21 @@ impl Drop for RenderBundle {
     }
 }
 
-/// Handle to a command queue on a device.
+/// A query set.
+pub struct QuerySet {
+    context: Arc<C>,
+    id: <C as Context>::QuerySetId,
+}
+
+impl Drop for QuerySet {
+    fn drop(&mut self) {
+        if !thread::panicking() {
+            self.context.query_set_drop(&self.id);
+        }
+    }
+}
+
+/// A handle to a command queue on a device.
 ///
 /// A `Queue` executes recorded [`CommandBuffer`] objects and provides convenience methods
 /// for writing to [buffers](Queue::write_buffer) and [textures](Queue::write_texture).
@@ -1134,6 +1185,7 @@ impl Device {
     pub fn create_command_encoder(&self, desc: &CommandEncoderDescriptor) -> CommandEncoder {
         CommandEncoder {
             context: Arc::clone(&self.context),
+            current_pipeline_statistics_query: None,
             id: Context::device_create_command_encoder(&*self.context, &self.id, desc),
             _p: Default::default(),
         }
@@ -1149,6 +1201,17 @@ impl Device {
             id: Context::device_create_render_bundle_encoder(&*self.context, &self.id, desc),
             _parent: self,
             _p: Default::default(),
+        }
+    }
+
+    /// Creates an empty [`QuerySet`].
+    pub fn create_query_set(
+        &self,
+        desc: &QuerySetDescriptor,
+    ) -> QuerySet {
+        QuerySet {
+            context: Arc::clone(&self.context),
+            id: Context::device_create_query_set(&*self.context, &self.id, desc),
         }
     }
 
@@ -1627,6 +1690,42 @@ impl CommandEncoder {
             copy_size,
         );
     }
+
+    /// Issue a timestamp command at this point in the queue. The timestamp will be written to the specified query set, at the specified index.
+    pub fn write_timestamp(
+        &mut self,
+        query_set: &QuerySet,
+        query_index: u32,
+        pipeline_stage: wgc::PipelineStage,
+    ) {
+        Context::command_encoder_write_timestamp(
+            &*self.context,
+            &self.id,
+            &query_set.id,
+            query_index,
+            pipeline_stage,
+        )
+    }
+
+    /// Resolve a query set, writing the results into the supplied destination buffer.
+    pub fn resolve_query_set(
+        &mut self,
+        query_set: &QuerySet,
+        first_query: u32,
+        query_count: u32,
+        destination: &Buffer,
+        destination_offset: BufferAddress,
+    ) {
+        Context::command_encoder_resolve_query_set(
+            &*self.context,
+            &self.id,
+            &query_set.id,
+            first_query,
+            query_count,
+            &destination.id,
+            destination_offset,
+        )
+    }
 }
 
 impl<'a> RenderPass<'a> {
@@ -1988,6 +2087,45 @@ impl<'a> RenderPass<'a> {
     pub fn set_push_constants(&mut self, stages: wgt::ShaderStage, offset: u32, data: &[u32]) {
         self.id.set_push_constants(stages, offset, data);
     }
+
+    /// Start a pipeline statistics query on this render pass. It can be ended with
+    /// `end_pipeline_statistics_query`. Pipeline statistics queries may not be nested.
+    pub fn begin_pipeline_statistics_query(
+        &mut self,
+        query_set: &QuerySet,
+        query_index: u32,
+    ) {
+        assert!(
+            self.parent.current_pipeline_statistics_query.is_none(),
+            "You cannot start a new pipeline statistics query until the previous one has been ended."
+        );
+        self.parent.current_pipeline_statistics_query = Some((query_set.id, query_index));
+        Context::command_encoder_begin_pipeline_statistics_query(
+            &*self.parent.context,
+            &self.parent.id,
+            &query_set.id,
+            query_index,
+        )
+    }
+
+    /// End the pipeline statistics query on this render pass. It can be started with
+    /// `begin_pipeline_statistics_query`. Pipeline statistics queries may not be nested.
+    pub fn end_pipeline_statistics_query(&mut self) {
+        if let Some((query_set_id, query_index)) =
+            self.parent.current_pipeline_statistics_query.take() {
+                Context::command_encoder_end_pipeline_statistics_query(
+                    &*self.parent.context,
+                    &self.parent.id,
+                    &query_set_id,
+                    query_index,
+                )
+        } else {
+            assert!(
+                false,
+                "You must start a pipeline statistics query before you can end one."
+            );
+        }
+    }
 }
 
 impl<'a> Drop for RenderPass<'a> {
@@ -2033,6 +2171,45 @@ impl<'a> ComputePass<'a> {
         indirect_offset: BufferAddress,
     ) {
         ComputePassInner::dispatch_indirect(&mut self.id, &indirect_buffer.id, indirect_offset);
+    }
+
+    /// Start a pipeline statistics query on this compute pass. It can be ended with
+    /// `end_pipeline_statistics_query`. Pipeline statistics queries may not be nested.
+    pub fn begin_pipeline_statistics_query(
+        &mut self,
+        query_set: &QuerySet,
+        query_index: u32,
+    ) {
+        assert!(
+            self.parent.current_pipeline_statistics_query.is_none(),
+            "You cannot start a new pipeline statistics query until the previous one has been ended."
+        );
+        self.parent.current_pipeline_statistics_query = Some((query_set.id, query_index));
+        Context::command_encoder_begin_pipeline_statistics_query(
+            &*self.parent.context,
+            &self.parent.id,
+            &query_set.id,
+            query_index,
+        )
+    }
+
+    /// End the pipeline statistics query on this compute pass. It can be started with
+    /// `begin_pipeline_statistics_query`. Pipeline statistics queries may not be nested.
+    pub fn end_pipeline_statistics_query(&mut self) {
+        if let Some((query_set_id, query_index)) =
+            self.parent.current_pipeline_statistics_query.take() {
+                Context::command_encoder_end_pipeline_statistics_query(
+                    &*self.parent.context,
+                    &self.parent.id,
+                    &query_set_id,
+                    query_index,
+                )
+        } else {
+            assert!(
+                false,
+                "You must start a pipeline statistics query before you can end one."
+            );
+        }
     }
 }
 

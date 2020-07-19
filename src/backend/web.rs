@@ -688,6 +688,7 @@ impl crate::Context for Context {
     type CommandBufferId = Sendable<web_sys::GpuCommandBuffer>;
     type RenderBundleEncoderId = RenderPass; //web_sys::GpuRenderBundleEncoder;
     type RenderBundleId = (); //web_sys::GpuRenderBundle;
+    type QuerySetId = ();
     type SurfaceId = Sendable<web_sys::GpuCanvasContext>;
     type SwapChainId = Sendable<web_sys::GpuSwapChain>;
 
@@ -1226,6 +1227,9 @@ impl crate::Context for Context {
     fn render_bundle_drop(&self, _render_bundle: &Self::RenderBundleId) {
         // Dropped automatically
     }
+    fn query_set_drop(&self, _query_set: &Self::QuerySetId) {
+        // Dropped automatically
+    }
     fn compute_pipeline_drop(&self, _pipeline: &Self::ComputePipelineId) {
         // Dropped automatically
     }
@@ -1290,6 +1294,61 @@ impl crate::Context for Context {
             &map_texture_copy_view(source),
             &map_texture_copy_view(destination),
             &map_extent_3d(copy_size),
+        )
+    }
+
+    fn command_encoder_write_timestamp(
+        &self,
+        encoder: &Self::CommandEncoderId,
+        query_set: &Self::QuerySetId,
+        query_index: u32,
+        pipeline_stage: wgc::PipelineStage,
+    ) {
+        encoder.write_timestamp(
+            query_set,
+            query_index,
+        )
+    }
+
+    fn command_encoder_begin_pipeline_statistics_query(
+        &self,
+        encoder: &Self::CommandEncoderId,
+        query_set: &Self::QuerySetId,
+        query_index: u32,
+    ) {
+        encoder.begin_pipeline_statistics_query(
+            query_set,
+            query_index,
+        )
+    }
+
+    fn command_encoder_end_pipeline_statistics_query(
+        &self,
+        encoder: &Self::CommandEncoderId,
+        query_set: &Self::QuerySetId,
+        query_index: u32,
+    ) {
+        encoder.end_pipeline_statistics_query(
+            query_set,
+            query_index,
+        )
+    }
+
+    fn command_encoder_resolve_query_set(
+        &self,
+        encoder: &Self::CommandEncoderId,
+        query_set: &Self::QuerySetId,
+        first_query: u32, // JTODO: QueryId instead of u32 ?
+        query_count: u32,
+        destination: &Self::BufferId,
+        destination_offset: BufferAddress,
+    ) {
+        encoder.resolve_query_set(
+            query_set,
+            first_query,
+            query_count,
+            destination,
+            destination_offset,
         )
     }
 

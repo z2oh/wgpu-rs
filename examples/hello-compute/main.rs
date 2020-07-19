@@ -43,11 +43,25 @@ async fn execute_gpu(numbers: Vec<u32>) -> Vec<u32> {
         .await
         .unwrap();
 
+    let pipeline_statistics_queries = vec![wgt::PipelineStatisticName::ComputeShaderInvocations];
+
+    let query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
+        type_: wgpu::QueryType::PipelineStatistics(&pipeline_statistics_queries),
+        count: 1,
+    });
+
     let cs_module = device.create_shader_module(wgpu::include_spirv!("shader.comp.spv"));
 
     let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
         size,
+        usage: wgpu::BufferUsage::MAP_READ | wgpu::BufferUsage::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    let query_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 16,
         usage: wgpu::BufferUsage::MAP_READ | wgpu::BufferUsage::COPY_DST,
         mapped_at_creation: false,
     });
@@ -96,11 +110,14 @@ async fn execute_gpu(numbers: Vec<u32>) -> Vec<u32> {
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     {
         let mut cpass = encoder.begin_compute_pass();
+        cpass.begin_pipeline_statistics_query(&query_set, 0);
         cpass.set_pipeline(&compute_pipeline);
         cpass.set_bind_group(0, &bind_group, &[]);
         cpass.dispatch(numbers.len() as u32, 1, 1);
+        cpass.end_pipeline_statistics_query();
     }
     encoder.copy_buffer_to_buffer(&storage_buffer, 0, &staging_buffer, 0, size);
+    encoder.resolve_query_set(&query_set, 0, 1, &query_buffer, 0);
 
     queue.submit(Some(encoder.finish()));
 
@@ -108,10 +125,30 @@ async fn execute_gpu(numbers: Vec<u32>) -> Vec<u32> {
     let buffer_slice = staging_buffer.slice(..);
     let buffer_future = buffer_slice.map_async(wgpu::MapMode::Read);
 
+    let query_buffer_slice = query_buffer.slice(..);
+    let query_buffer_future = query_buffer_slice.map_async(wgpu::MapMode::Read);
+
     // Poll the device in a blocking manner so that our future resolves.
     // In an actual application, `device.poll(...)` should
     // be called in an event loop or on another thread.
     device.poll(wgpu::Maintain::Wait);
+
+    if let Ok(()) = query_buffer_future.await {
+        let data = query_buffer_slice.get_mapped_range();
+        let result: Vec<_> = data
+            .chunks_exact(8)
+            .map(|b| u64::from_ne_bytes(b.try_into().unwrap()))
+            .collect();
+
+        println!("raw query data: {:?}", result);
+
+        // With the current interface, we have to make sure all mapped views are
+        // dropped before we unmap the buffer.
+        drop(data);
+        query_buffer.unmap();
+    } else {
+        panic!("failed to retrieve query information from gpu");
+    }
 
     if let Ok(()) = buffer_future.await {
         let data = buffer_slice.get_mapped_range();

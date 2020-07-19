@@ -474,6 +474,7 @@ impl crate::Context for Context {
     type CommandBufferId = wgc::id::CommandBufferId;
     type RenderBundleEncoderId = wgc::command::RenderBundleEncoder;
     type RenderBundleId = wgc::id::RenderBundleId;
+    type QuerySetId = wgc::id::QuerySetId;
     type SurfaceId = wgc::id::SurfaceId;
     type SwapChainId = wgc::id::SwapChainId;
 
@@ -775,6 +776,18 @@ impl crate::Context for Context {
         wgc::command::RenderBundleEncoder::new(desc, *device, None).unwrap()
     }
 
+    fn device_create_query_set(
+        &self,
+        device: &Self::DeviceId,
+        desc: &wgt::QuerySetDescriptor,
+    ) -> Self::QuerySetId {
+        gfx_select!(*device => self.device_create_query_set(
+            *device,
+            &desc,
+            PhantomData
+        ))
+    }
+
     fn device_drop(&self, device: &Self::DeviceId) {
         #[cfg(not(target_arch = "wasm32"))]
         gfx_select!(*device => self.device_poll(*device, true));
@@ -925,6 +938,9 @@ impl crate::Context for Context {
     fn render_bundle_drop(&self, render_bundle: &Self::RenderBundleId) {
         gfx_select!(*render_bundle => self.render_bundle_destroy(*render_bundle))
     }
+    fn query_set_drop(&self, query_set: &Self::QuerySetId) {
+        gfx_select!(*query_set => self.query_set_destroy(*query_set))
+    }
     fn compute_pipeline_drop(&self, pipeline: &Self::ComputePipelineId) {
         gfx_select!(*pipeline => self.compute_pipeline_destroy(*pipeline))
     }
@@ -998,6 +1014,66 @@ impl crate::Context for Context {
             &copy_size
         ))
         .unwrap()
+    }
+
+    fn command_encoder_write_timestamp(
+        &self,
+        encoder: &Self::CommandEncoderId,
+        query_set: &Self::QuerySetId,
+        query_index: u32,
+        pipeline_stage: wgc::PipelineStage,
+    ) {
+        gfx_select!(*encoder => self.command_encoder_write_timestamp(
+            *encoder,
+            *query_set,
+            query_index,
+            pipeline_stage
+        ))
+    }
+
+    fn command_encoder_begin_pipeline_statistics_query(
+        &self,
+        encoder: &Self::CommandEncoderId,
+        query_set: &Self::QuerySetId,
+        query_index: u32,
+    ) {
+        gfx_select!(*encoder => self.command_encoder_begin_pipeline_statistics_query(
+            *encoder,
+            *query_set,
+            query_index
+        ))
+    }
+
+    fn command_encoder_end_pipeline_statistics_query(
+        &self,
+        encoder: &Self::CommandEncoderId,
+        query_set: &Self::QuerySetId,
+        query_index: u32,
+    ) {
+        gfx_select!(*encoder => self.command_encoder_end_pipeline_statistics_query(
+            *encoder,
+            *query_set,
+            query_index
+        ))
+    }
+
+    fn command_encoder_resolve_query_set(
+        &self,
+        encoder: &Self::CommandEncoderId,
+        query_set: &Self::QuerySetId,
+        first_query: u32,
+        query_count: u32,
+        destination: &Self::BufferId,
+        destination_offset: wgt::BufferAddress,
+    ) {
+        gfx_select!(*encoder => self.command_encoder_resolve_query_set(
+            *encoder,
+            *query_set,
+            first_query,
+            query_count,
+            *destination,
+            destination_offset
+        ))
     }
 
     fn command_encoder_begin_compute_pass(
